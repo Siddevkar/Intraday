@@ -1,0 +1,41 @@
+name: Angle Intraday Bot
+
+on:
+  schedule:
+    # 1. Start scanning exactly at 10:00 AM IST (04:30 UTC)
+    # Runs every 5 mins during the Entry Window (10 AM - 11 AM)
+    - cron: '30-59/5 4 * * 1-5'
+
+    # 2. Continue running to Manage Trades & Exit
+    # From 10:30 AM IST (05:00 UTC) until 3:00 PM IST (09:30 UTC)
+    # This ensures 2:50 PM Exit triggers correctly.
+    - cron: '*/5 5-9 * * 1-5'
+
+  workflow_dispatch: # Allows manual run button
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run Trading Logic
+        env:
+          # This connects your GitHub Secrets to the Python Code
+          API_KEY: ${{ secrets.API_KEY }}
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          PIN: ${{ secrets.PIN }}
+          TOTP_KEY: ${{ secrets.TOTP_KEY }}
+        run: python main.py
