@@ -1,21 +1,16 @@
-name: Angle Intraday Bot
+name: Continuous Angle Bot
 
 on:
   schedule:
-    # 1. Start scanning exactly at 10:00 AM IST (04:30 UTC)
-    # Runs every 5 mins during the Entry Window (10 AM - 11 AM)
-    - cron: '30-59/5 4 * * 1-5'
+    # Starts at 09:55 AM IST (04:25 UTC)
+    - cron: '25 4 * * 1-5'
 
-    # 2. Continue running to Manage Trades & Exit
-    # From 10:30 AM IST (05:00 UTC) until 3:00 PM IST (09:30 UTC)
-    # This ensures 2:50 PM Exit triggers correctly.
-    - cron: '*/5 5-9 * * 1-5'
-
-  workflow_dispatch: # Allows manual run button
+  workflow_dispatch: # Manual Run Button
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 360  # ALLOWS 6 HOURS CONTINUOUS RUN
     
     steps:
       - name: Checkout Code
@@ -33,9 +28,9 @@ jobs:
 
       - name: Run Trading Logic
         env:
-          # This connects your GitHub Secrets to the Python Code
           API_KEY: ${{ secrets.API_KEY }}
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
           PIN: ${{ secrets.PIN }}
           TOTP_KEY: ${{ secrets.TOTP_KEY }}
         run: python main.py
+        
