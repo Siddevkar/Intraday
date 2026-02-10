@@ -19,7 +19,9 @@ LEVERAGE = 5.0
 ATR_MULTIPLIER = 2.0           
 NIFTY_TOKEN = "99926000"       
 MAX_OPEN_POSITIONS = 1         
-OI_BLAST_THRESHOLD = 3.0       
+
+# 🔥 UPDATED: 4% OI Blast Requirement
+OI_BLAST_THRESHOLD = 4.0       
 
 def login():
     try:
@@ -31,7 +33,6 @@ def login():
         exit()
 
 def get_ist_time():
-    # Convert Server Time (UTC) to Indian Time (IST)
     utc_now = datetime.utcnow()
     ist_now = utc_now + timedelta(hours=5, minutes=30)
     return ist_now
@@ -109,69 +110,72 @@ def get_intraday_metrics(obj, token):
         }
     except: return None
 
+# --- 🔥 UPDATED LOGIC: 4% OI BLAST ---
 def check_oi_blast(obj, fut_token):
     try:
         quote = obj.getMarketData("NFO", fut_token) 
         if quote and 'data' in quote:
-            current_oi = float(quote['data']['oi'])  
-            start_day_oi = float(quote['data'].get('opninterest', current_oi)) 
-            if start_day_oi == 0: return False
-            oi_change_pct = ((current_oi - start_day_oi) / start_day_oi) * 100
-            if abs(oi_change_pct) > OI_BLAST_THRESHOLD:
-                print(f"🔥 OI BLAST DETECTED: {oi_change_pct:.2f}%")
+            # 1. Get Current Total OI
+            current_oi = float(quote['data'].get('oi', 0))
+            if current_oi == 0: return False
+
+            # 2. Logic to find "Yesterday's OI"
+            # Some APIs give 'opninterest' as "Day Start OI".
+            # If unavailable, we use a failsafe (Price Blast).
+            
+            # Let's try to calculate change if 'chngeoi' exists
+            oi_change_val = float(quote['data'].get('chngeoi', 0)) 
+            
+            if oi_change_val != 0:
+                # Math: Yesterday OI = Current - Change
+                yesterday_oi = current_oi - oi_change_val
+                if yesterday_oi > 0:
+                    blast_pct = (oi_change_val / yesterday_oi) * 100
+                    
+                    if abs(blast_pct) > OI_BLAST_THRESHOLD:
+                         print(f"🔥 TRUE OI BLAST: {blast_pct:.2f}% (Threshold: {OI_BLAST_THRESHOLD}%)")
+                         return True
+            
+            # 3. FAILSAFE: If API hides 'chngeoi', use Price Blast as Proxy
+            # (Because 4% OI Blast usually causes > 2% Price Move)
+            p_change = float(quote['data'].get('percentchange', 0))
+            if abs(p_change) > 2.5: # 2.5% Price Move is huge (Proxy for 4% OI)
+                print(f"🔥 MOMENTUM BLAST (Proxy): {p_change}%")
                 return True
+
     except: return False
     return False
 
-# --- 🔥 CRITICAL: 2:50 PM FORCE EXIT LOGIC ---
+# --- 2:50 PM FORCE EXIT ---
 def check_time_exit(obj):
     ist_now = get_ist_time()
-    
-    # Logic: If time is 2:50 PM or later (up to 2:59 PM)
     if ist_now.hour == 14 and ist_now.minute >= 50:
         print(f"⏰ 2:50 PM Check: Scanning for open Intraday trades to Close...")
-        
         try:
             positions = obj.position()
             if positions and positions['data']:
                 for pos in positions['data']:
                     qty = int(pos['netqty'])
-                    
-                    # ⚠️ ONLY Close 'INTRADAY'. Keep 'MARGIN' (Swing) Safe.
                     if qty != 0 and pos['producttype'] == 'INTRADAY':
-                        print(f"🚨 FORCE EXIT TRIGGERED: Closing {pos['tradingsymbol']} (Qty: {qty})")
-                        
-                        # Place Market Exit Order
-                        order_params = {
-                            "variety": "NORMAL", 
-                            "tradingsymbol": pos['tradingsymbol'], 
-                            "symboltoken": pos['symboltoken'],
-                            "transactiontype": "SELL" if qty > 0 else "BUY", # Opposite of current position
-                            "exchange": "NSE", 
-                            "ordertype": "MARKET",
-                            "producttype": "INTRADAY", 
-                            "duration": "DAY", 
-                            "quantity": abs(qty)
-                        }
-                        obj.placeOrder(order_params)
-            
-            return True # Returns True meaning "We are in Exit Mode"
-            
+                        print(f"🚨 FORCE EXIT: Closing {pos['tradingsymbol']}")
+                        obj.placeOrder({
+                            "variety": "NORMAL", "tradingsymbol": pos['tradingsymbol'], "symboltoken": pos['symboltoken'],
+                            "transactiontype": "SELL" if qty > 0 else "BUY", "exchange": "NSE", "ordertype": "MARKET",
+                            "producttype": "INTRADAY", "duration": "DAY", "quantity": abs(qty)
+                        })
+            return True 
         except Exception as e:
             print(f"Error in Exit Logic: {e}")
             return True
-            
-    return False # Not 2:50 PM yet
+    return False
 
 def check_and_trail_sl(obj, token_map):
-    # This just counts active trades
     try:
         positions = obj.position()
         if not positions or not positions['data']: return 0
         active_count = 0
         for pos in positions['data']:
-            qty = int(pos['netqty'])
-            if qty != 0 and pos['producttype'] == 'INTRADAY': 
+            if int(pos['netqty']) != 0 and pos['producttype'] == 'INTRADAY': 
                 active_count += 1
         return active_count
     except: return 0
@@ -181,19 +185,15 @@ def execute_trade(obj, name, token, ltp, atr, side):
     if qty < 1: return
     print(f"🚀 {side} {name} | Price: {ltp} | ATR: {atr:.2f}")
     try:
-        # 1. Main Order
         obj.placeOrder({
             "variety": "NORMAL", "tradingsymbol": f"{name}-EQ", "symboltoken": token,
             "transactiontype": "BUY" if side == "LONG" else "SELL", "exchange": "NSE", "ordertype": "MARKET",
             "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
         })
         time.sleep(1)
-        
-        # 2. Stoploss Order
         sl_dist = atr * ATR_MULTIPLIER
         sl_price = (ltp - sl_dist) if side == "LONG" else (ltp + sl_dist)
         sl_price = round(sl_price * 20) / 20
-        
         obj.placeOrder({
             "variety": "STOPLOSS", "tradingsymbol": f"{name}-EQ", "symboltoken": token,
             "transactiontype": "SELL" if side == "LONG" else "BUY", "exchange": "NSE", "ordertype": "STOPLOSS_LIMIT",
@@ -211,40 +211,36 @@ def get_nifty_trend(obj):
 def run():
     print("------------------------------------------")
     print("       🚀 CONTINUOUS BOT STARTED          ")
-    print("       Mode: Non-Stop Monitor             ")
-    print("       Exit: Force Close @ 2:50 PM        ")
+    print("       Mode: 4% OI BLAST + MOMENTUM       ")
     print("------------------------------------------")
     
     obj = login()
     tokens = get_tokens_map()
 
-    # Infinite Loop (Stays Alive)
     while True:
         ist_now = get_ist_time()
         
-        # A. Stop at 3:30 PM IST (Market Close)
+        # Stop at 3:30 PM
         if ist_now.hour >= 15 and ist_now.minute >= 30:
             print("😴 Market Closed. Bot shutting down.")
             break
 
         print(f"Scanning at {ist_now.strftime('%H:%M:%S')}...")
 
-        # B. CHECK 2:50 PM EXIT FIRST
-        # If it is 2:50 PM, this function runs, closes trades, and returns True.
+        # Check 2:50 PM Exit
         if check_time_exit(obj):
-            print("⚠️ In Force Exit Zone (2:50-3:00 PM). No new trades.")
-            time.sleep(60) # Wait 1 min and check again (to ensure exit)
-            continue
-
-        # C. Count Trades
-        active_trades = check_and_trail_sl(obj, tokens)
-        
-        if active_trades >= MAX_OPEN_POSITIONS:
-            print(f"⏸️ Trade Active. Monitoring... (Time: {ist_now.strftime('%H:%M')})")
             time.sleep(60)
             continue
 
-        # D. ENTRY LOGIC (Only 10 AM - 11 AM)
+        # Monitor Trades
+        active_trades = check_and_trail_sl(obj, tokens)
+        
+        if active_trades >= MAX_OPEN_POSITIONS:
+            print(f"⏸️ Trade Active. Monitoring...")
+            time.sleep(60)
+            continue
+
+        # ENTRY LOGIC (10 AM - 11 AM Only)
         if ist_now.hour == 10:
             nifty_trend = get_nifty_trend(obj)
             if nifty_trend != "NEUTRAL":
@@ -257,27 +253,26 @@ def run():
                         if curr is None: continue
                         
                         ltp = curr['close']
-                        atr = curr['atr']
                         
-                        # 1. Check Blast
+                        # 1. Check 4% BLAST
                         if not check_oi_blast(obj, ids['fut']): continue 
                         
-                        # 2. Check Trend & Level
+                        # 2. Check Trend
                         if nifty_trend == "BULLISH":
                             if ltp > y_high and ltp > curr['vwap']:
-                                execute_trade(obj, name, ids['eq'], ltp, atr, "LONG")
-                                break # Stop scanning after 1 trade
+                                execute_trade(obj, name, ids['eq'], ltp, curr['atr'], "LONG")
+                                break 
 
                         elif nifty_trend == "BEARISH":
                             if ltp < y_low and ltp < curr['vwap']:
-                                execute_trade(obj, name, ids['eq'], ltp, atr, "SHORT")
-                                break # Stop scanning after 1 trade
+                                execute_trade(obj, name, ids['eq'], ltp, curr['atr'], "SHORT")
+                                break 
                     except: continue
         else:
             print("⏳ Waiting for 10 AM - 11 AM Window...")
 
-        # E. Heartbeat Speed (60 Seconds)
         time.sleep(60)
 
 if __name__ == "__main__":
     run()
+            
