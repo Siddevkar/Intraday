@@ -3,14 +3,15 @@ name: Continuous Angle Bot
 on:
   schedule:
     # Starts at 09:55 AM IST (04:25 UTC)
+    # This gives it 5 mins to warm up before the 10:00 AM Trading Window
     - cron: '25 4 * * 1-5'
 
-  workflow_dispatch: # Manual Run Button
+  workflow_dispatch: # Allows you to click "Run Now" button manually
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # ALLOWS 6 HOURS CONTINUOUS RUN
+    timeout-minutes: 360  # Allows running for 6 hours (Max limit)
     
     steps:
       - name: Checkout Code
@@ -32,5 +33,5 @@ jobs:
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
           PIN: ${{ secrets.PIN }}
           TOTP_KEY: ${{ secrets.TOTP_KEY }}
-        run: python main.py
-        
+        # The '-u' flag below fixes the invisible log issue
+        run: python -u main.py
