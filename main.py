@@ -35,11 +35,14 @@ def get_ist_time():
     ist_now = utc_now + timedelta(hours=5, minutes=30)
     return ist_now
 
+# --- 3. FETCHES ALL F&O STOCKS (DYNAMIC LIST) ---
 def get_tokens_map():
+    print("📋 Fetching Full F&O Scrip Master...")
     url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
     try:
         data = requests.get(url).json()
         futures_map = {}
+        # Step 1: Find all Futures
         for item in data:
             if item['instrumenttype'] == 'FUTSTK' and item['exchangeseg'] == 'NFO':
                 name = item['name']
@@ -49,6 +52,7 @@ def get_tokens_map():
                     futures_map[name].append({'date': exp, 'token': item['token']})
                 except: continue
         
+        # Step 2: Match with Cash Tokens
         final_map = {}
         for name, contracts in futures_map.items():
             contracts.sort(key=lambda x: x['date'])
@@ -60,6 +64,8 @@ def get_tokens_map():
                     break
             if eq_token:
                 final_map[name] = {'eq': eq_token, 'fut': contracts[0]['token']}
+        
+        print(f"✅ Loaded {len(final_map)} F&O Stocks for Scanning.")
         return final_map
     except: return {}
 
@@ -121,7 +127,7 @@ def check_oi_blast(obj, fut_token):
                 if yesterday_oi > 0:
                     blast_pct = (oi_change_val / yesterday_oi) * 100
                     if abs(blast_pct) > OI_BLAST_THRESHOLD:
-                         print(f"🔥 TRUE OI BLAST: {blast_pct:.2f}% (Threshold: {OI_BLAST_THRESHOLD}%)")
+                         print(f"🔥 TRUE OI BLAST: {blast_pct:.2f}%")
                          return True
             
             p_change = float(quote['data'].get('percentchange', 0))
@@ -188,6 +194,7 @@ def execute_trade(obj, name, token, ltp, atr, side):
     except Exception as e: print(e)
 
 def get_nifty_trend(obj):
+    # Retry logic included inside main loop
     metrics = get_intraday_metrics(obj, NIFTY_TOKEN)
     if not metrics: return "NEUTRAL"
     return "BULLISH" if metrics['close'] > metrics['vwap'] else "BEARISH"
@@ -197,6 +204,7 @@ def run():
     print("------------------------------------------")
     print("       🚀 CONTINUOUS BOT STARTED          ")
     print("       Mode: 4% OI BLAST + MOMENTUM       ")
+    print("       Scope: ALL F&O Stocks (Anti-Block) ")
     print("------------------------------------------")
     
     obj = login()
@@ -210,8 +218,7 @@ def run():
             print("😴 Market Closed. Bot shutting down.")
             break
 
-        # 2. 🔥 EARLY WAKE-UP GUARD (The Fix)
-        # If GitHub starts this early (e.g. 8:45 AM or 9:30 AM), it waits here.
+        # 2. 🔥 EARLY WAKE-UP GUARD
         if ist_now.hour < 9 or (ist_now.hour == 9 and ist_now.minute < 55):
             print(f"⏳ Woke up at {ist_now.strftime('%H:%M:%S')}. Idling until 9:55 AM...")
             time.sleep(60)
@@ -234,10 +241,18 @@ def run():
 
         # 5. ENTRY LOGIC (10 AM - 11 AM Only)
         if ist_now.hour == 10:
-            nifty_trend = get_nifty_trend(obj)
+            try:
+                nifty_trend = get_nifty_trend(obj)
+            except:
+                time.sleep(2)
+                nifty_trend = get_nifty_trend(obj)
+            
             if nifty_trend != "NEUTRAL":
                 for name, ids in tokens.items():
                     try:
+                        # --- ⚠️ RATE LIMIT FIX: SLEEP 1 SEC ---
+                        time.sleep(1) 
+                        
                         y_high, y_low = get_yesterday_levels(obj, ids['eq'])
                         if y_high is None: continue
                         
@@ -257,7 +272,9 @@ def run():
                             if ltp < y_low and ltp < curr['vwap']:
                                 execute_trade(obj, name, ids['eq'], ltp, curr['atr'], "SHORT")
                                 break 
-                    except: continue
+                    except: 
+                        time.sleep(1)
+                        continue
         else:
             print("⏳ Outside 10-11 AM Window. Monitoring portfolio...")
 
