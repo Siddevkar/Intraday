@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from SmartApi import SmartConnect
 import pyotp
 
-# --- 1. SECURE CONFIGURATION (GitHub Secrets) ---
+# --- 1. SECURE CONFIGURATION ---
 API_KEY = os.environ.get('API_KEY')
 CLIENT_ID = os.environ.get('CLIENT_ID')
 PIN = os.environ.get('PIN')
@@ -19,8 +19,6 @@ LEVERAGE = 5.0
 ATR_MULTIPLIER = 2.0           
 NIFTY_TOKEN = "99926000"       
 MAX_OPEN_POSITIONS = 1         
-
-# 🔥 UPDATED: 4% OI Blast Requirement
 OI_BLAST_THRESHOLD = 4.0       
 
 def login():
@@ -110,43 +108,30 @@ def get_intraday_metrics(obj, token):
         }
     except: return None
 
-# --- 🔥 UPDATED LOGIC: 4% OI BLAST ---
 def check_oi_blast(obj, fut_token):
     try:
         quote = obj.getMarketData("NFO", fut_token) 
         if quote and 'data' in quote:
-            # 1. Get Current Total OI
             current_oi = float(quote['data'].get('oi', 0))
             if current_oi == 0: return False
 
-            # 2. Logic to find "Yesterday's OI"
-            # Some APIs give 'opninterest' as "Day Start OI".
-            # If unavailable, we use a failsafe (Price Blast).
-            
-            # Let's try to calculate change if 'chngeoi' exists
             oi_change_val = float(quote['data'].get('chngeoi', 0)) 
-            
             if oi_change_val != 0:
-                # Math: Yesterday OI = Current - Change
                 yesterday_oi = current_oi - oi_change_val
                 if yesterday_oi > 0:
                     blast_pct = (oi_change_val / yesterday_oi) * 100
-                    
                     if abs(blast_pct) > OI_BLAST_THRESHOLD:
                          print(f"🔥 TRUE OI BLAST: {blast_pct:.2f}% (Threshold: {OI_BLAST_THRESHOLD}%)")
                          return True
             
-            # 3. FAILSAFE: If API hides 'chngeoi', use Price Blast as Proxy
-            # (Because 4% OI Blast usually causes > 2% Price Move)
             p_change = float(quote['data'].get('percentchange', 0))
-            if abs(p_change) > 2.5: # 2.5% Price Move is huge (Proxy for 4% OI)
+            if abs(p_change) > 2.5: 
                 print(f"🔥 MOMENTUM BLAST (Proxy): {p_change}%")
                 return True
 
     except: return False
     return False
 
-# --- 2:50 PM FORCE EXIT ---
 def check_time_exit(obj):
     ist_now = get_ist_time()
     if ist_now.hour == 14 and ist_now.minute >= 50:
@@ -220,19 +205,26 @@ def run():
     while True:
         ist_now = get_ist_time()
         
-        # Stop at 3:30 PM
+        # 1. Stop at 3:30 PM
         if ist_now.hour >= 15 and ist_now.minute >= 30:
             print("😴 Market Closed. Bot shutting down.")
             break
 
+        # 2. 🔥 EARLY WAKE-UP GUARD (The Fix)
+        # If GitHub starts this early (e.g. 8:45 AM or 9:30 AM), it waits here.
+        if ist_now.hour < 9 or (ist_now.hour == 9 and ist_now.minute < 55):
+            print(f"⏳ Woke up at {ist_now.strftime('%H:%M:%S')}. Idling until 9:55 AM...")
+            time.sleep(60)
+            continue
+
         print(f"Scanning at {ist_now.strftime('%H:%M:%S')}...")
 
-        # Check 2:50 PM Exit
+        # 3. Check 2:50 PM Exit
         if check_time_exit(obj):
             time.sleep(60)
             continue
 
-        # Monitor Trades
+        # 4. Monitor Trades
         active_trades = check_and_trail_sl(obj, tokens)
         
         if active_trades >= MAX_OPEN_POSITIONS:
@@ -240,7 +232,7 @@ def run():
             time.sleep(60)
             continue
 
-        # ENTRY LOGIC (10 AM - 11 AM Only)
+        # 5. ENTRY LOGIC (10 AM - 11 AM Only)
         if ist_now.hour == 10:
             nifty_trend = get_nifty_trend(obj)
             if nifty_trend != "NEUTRAL":
@@ -254,10 +246,8 @@ def run():
                         
                         ltp = curr['close']
                         
-                        # 1. Check 4% BLAST
                         if not check_oi_blast(obj, ids['fut']): continue 
                         
-                        # 2. Check Trend
                         if nifty_trend == "BULLISH":
                             if ltp > y_high and ltp > curr['vwap']:
                                 execute_trade(obj, name, ids['eq'], ltp, curr['atr'], "LONG")
@@ -269,10 +259,9 @@ def run():
                                 break 
                     except: continue
         else:
-            print("⏳ Waiting for 10 AM - 11 AM Window...")
+            print("⏳ Outside 10-11 AM Window. Monitoring portfolio...")
 
         time.sleep(60)
 
 if __name__ == "__main__":
     run()
-            
