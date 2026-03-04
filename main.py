@@ -21,6 +21,9 @@ NIFTY_TOKEN = "99926000"
 MAX_OPEN_POSITIONS = 1         
 OI_BLAST_THRESHOLD = 4.0       
 
+# 🔥 NEW: MEMORY BANK TO PREVENT API SPAM
+YESTERDAY_CACHE = {}
+
 def login():
     try:
         obj = SmartConnect(api_key=API_KEY)
@@ -35,14 +38,12 @@ def get_ist_time():
     ist_now = utc_now + timedelta(hours=5, minutes=30)
     return ist_now
 
-# --- 3. FETCHES ALL F&O STOCKS (DYNAMIC LIST) ---
 def get_tokens_map():
     print("📋 Fetching Full F&O Scrip Master...")
     url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
     try:
         data = requests.get(url).json()
         futures_map = {}
-        # Step 1: Find all Futures
         for item in data:
             if item['instrumenttype'] == 'FUTSTK' and item['exchangeseg'] == 'NFO':
                 name = item['name']
@@ -52,7 +53,6 @@ def get_tokens_map():
                     futures_map[name].append({'date': exp, 'token': item['token']})
                 except: continue
         
-        # Step 2: Match with Cash Tokens
         final_map = {}
         for name, contracts in futures_map.items():
             contracts.sort(key=lambda x: x['date'])
@@ -69,7 +69,12 @@ def get_tokens_map():
         return final_map
     except: return {}
 
+# 🔥 UPDATED: ONLY FETCH ONCE, THEN USE MEMORY
 def get_yesterday_levels(obj, token):
+    # If we already know the answer, don't ask the server!
+    if token in YESTERDAY_CACHE:
+        return YESTERDAY_CACHE[token]
+        
     try:
         hist_params = {
             "exchange": "NSE", "symboltoken": token, "interval": "ONE_DAY",
@@ -79,7 +84,11 @@ def get_yesterday_levels(obj, token):
         data = obj.getCandleData(hist_params)
         df = pd.DataFrame(data['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
         yesterday = df.iloc[-2] 
-        return float(yesterday['high']), float(yesterday['low'])
+        result = (float(yesterday['high']), float(yesterday['low']))
+        
+        # Save to memory bank
+        YESTERDAY_CACHE[token] = result 
+        return result
     except: return None, None
 
 def get_intraday_metrics(obj, token):
@@ -194,7 +203,6 @@ def execute_trade(obj, name, token, ltp, atr, side):
     except Exception as e: print(e)
 
 def get_nifty_trend(obj):
-    # Retry logic included inside main loop
     metrics = get_intraday_metrics(obj, NIFTY_TOKEN)
     if not metrics: return "NEUTRAL"
     return "BULLISH" if metrics['close'] > metrics['vwap'] else "BEARISH"
@@ -204,7 +212,7 @@ def run():
     print("------------------------------------------")
     print("       🚀 CONTINUOUS BOT STARTED          ")
     print("       Mode: 4% OI BLAST + MOMENTUM       ")
-    print("       Scope: ALL F&O Stocks (Anti-Block) ")
+    print("       Scope: ALL F&O Stocks (Cached)     ")
     print("------------------------------------------")
     
     obj = login()
@@ -213,12 +221,10 @@ def run():
     while True:
         ist_now = get_ist_time()
         
-        # 1. Stop at 3:30 PM
         if ist_now.hour >= 15 and ist_now.minute >= 30:
             print("😴 Market Closed. Bot shutting down.")
             break
 
-        # 2. 🔥 EARLY WAKE-UP GUARD
         if ist_now.hour < 9 or (ist_now.hour == 9 and ist_now.minute < 55):
             print(f"⏳ Woke up at {ist_now.strftime('%H:%M:%S')}. Idling until 9:55 AM...")
             time.sleep(60)
@@ -226,12 +232,10 @@ def run():
 
         print(f"Scanning at {ist_now.strftime('%H:%M:%S')}...")
 
-        # 3. Check 2:50 PM Exit
         if check_time_exit(obj):
             time.sleep(60)
             continue
 
-        # 4. Monitor Trades
         active_trades = check_and_trail_sl(obj, tokens)
         
         if active_trades >= MAX_OPEN_POSITIONS:
@@ -239,7 +243,6 @@ def run():
             time.sleep(60)
             continue
 
-        # 5. ENTRY LOGIC (10 AM - 11 AM Only)
         if ist_now.hour == 10:
             try:
                 nifty_trend = get_nifty_trend(obj)
@@ -250,8 +253,7 @@ def run():
             if nifty_trend != "NEUTRAL":
                 for name, ids in tokens.items():
                     try:
-                        # --- ⚠️ RATE LIMIT FIX: SLEEP 1 SEC ---
-                        time.sleep(1) 
+                        time.sleep(0.5) # Reduced sleep since we cut API calls in half
                         
                         y_high, y_low = get_yesterday_levels(obj, ids['eq'])
                         if y_high is None: continue
@@ -273,7 +275,6 @@ def run():
                                 execute_trade(obj, name, ids['eq'], ltp, curr['atr'], "SHORT")
                                 break 
                     except: 
-                        time.sleep(1)
                         continue
         else:
             print("⏳ Outside 10-11 AM Window. Monitoring portfolio...")
